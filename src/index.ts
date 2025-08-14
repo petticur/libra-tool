@@ -34,14 +34,8 @@ function validateAndNormalizeAddress(address: string): string {
     process.exit(1);
   }
 
-  // Convert 32-char address to 64-char by prepending 32 zeros
-  let fullAddress = addressWithoutPrefix;
-  if (fullAddress.length === 32) {
-    fullAddress = '0'.repeat(32) + fullAddress;
-  }
-
-  // Normalize address: convert to uppercase and ensure 0x prefix
-  return '0x' + fullAddress.toUpperCase();
+  // Normalize address: convert to lower case and ensure 0x prefix
+  return '0x' + addressWithoutPrefix.toLowerCase();
 }
 
 /**
@@ -99,13 +93,19 @@ async function calculateAddressScores(
   // Initialize all addresses with score 0
   allAddresses.forEach(addr => scores.set(addr, 0));
 
+  // Set fixed scores for root addresses
+  rootAddresses.forEach(rootAddr => {
+    if (allAddresses.has(rootAddr)) {
+      scores.set(rootAddr, ROOT_SCORE);
+    }
+  });
+
   // Calculate scores from each root address
   for (const rootAddr of rootAddresses) {
+    // Skip if this root is not in our graph
+    if (!allAddresses.has(rootAddr)) continue;
 
-    // Set root score
-    scores.set(rootAddr, (scores.get(rootAddr) || 0) + ROOT_SCORE);
-
-    // BFS from this root
+    // BFS from this root, traversing DOWN the trust chain
     const visited = new Set<string>();
     const queue: Array<{address: string, score: number}> = [{address: rootAddr, score: ROOT_SCORE}];
     visited.add(rootAddr);
@@ -119,33 +119,35 @@ async function calculateAddressScores(
       if (nextScore < 1) continue;
 
       try {
-        // Fetch who vouches for this address (reverse direction)
-        const payload = LibraViews.vouch_getReceivedVouches(address);
+        // Fetch who this address vouches FOR (forward direction)
+        const payload = LibraViews.vouch_getGivenVouches(address);
         const result = await client.viewJson(payload);
 
         if (Array.isArray(result) && result.length === 2) {
           const [addresses] = result;
           if (Array.isArray(addresses)) {
-            // Process each voucher (who vouches for current address)
-            for (const voucherAddr of addresses) {
-              const voucherAddress = String(voucherAddr);
-              // Add score to voucher if not visited from this root
-              if (!visited.has(voucherAddress)) {
-                visited.add(voucherAddress);
+            // Process each address that this address vouches FOR
+            for (const vouchedAddr of addresses) {
+              const vouchedAddress = String(vouchedAddr);
+              // Only process if this address is in our graph
+              if (allAddresses.has(vouchedAddress) && !visited.has(vouchedAddress)) {
+                visited.add(vouchedAddress);
 
-                // Accumulate score
-                const currentScore = scores.get(voucherAddress) || 0;
-                scores.set(voucherAddress, currentScore + nextScore);
+                // Accumulate score (but never for root addresses)
+                if (!rootAddresses.has(vouchedAddress)) {
+                  const currentScore = scores.get(vouchedAddress) || 0;
+                  scores.set(vouchedAddress, currentScore + nextScore);
+                }
 
                 // Add to queue for further traversal
-                queue.push({address: voucherAddress, score: nextScore});
+                queue.push({address: vouchedAddress, score: nextScore});
               }
             }
           }
         }
       } catch (error) {
         // Skip addresses that can't be fetched
-        console.warn(`Could not fetch vouches for ${shortenAddress(address)} during scoring`,
+        console.warn(`Could not fetch given vouches for ${shortenAddress(address)} during scoring`,
           error instanceof Error ? error.message : error);
       }
     }
@@ -253,13 +255,10 @@ async function fetchVouchGraph(
 function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddresses: Set<string>, scores: ScoreMap): string {
   if (edges.length === 0) {
     // Check if start address is a root
-    const normalizedStart = startAddress.startsWith('0x')
-      ? startAddress.toUpperCase()
-      : '0x' + startAddress.toUpperCase();
-    const isRoot = rootAddresses.has(normalizedStart);
+    const isRoot = rootAddresses.has(startAddress);
 
     // If no edges, just show the single node with special styling
-    const score = scores.get(normalizedStart) || 0;
+    const score = scores.get(startAddress) || 0;
     const scoreText = score > 0 ? ` (${formatScore(score)})` : '';
     return `\`\`\`mermaid
 graph TD
@@ -281,10 +280,7 @@ graph TD
 
   // Add node definitions with shortened labels and scores
   addresses.forEach(addr => {
-    const normalizedAddr = addr.startsWith('0x')
-      ? addr.toUpperCase()
-      : '0x' + addr.toUpperCase();
-    const score = scores.get(normalizedAddr) || 0;
+    const score = scores.get(addr) || 0;
     const scoreText = score > 0 ? ` (${formatScore(score)})` : '';
     mermaid += `    ${addr}["${shortenAddress(addr)}${scoreText}"]\n`;
   });
@@ -294,10 +290,7 @@ graph TD
 
   // Style root nodes differently (green)
   addresses.forEach(addr => {
-    const normalizedAddr = addr.startsWith('0x')
-      ? addr.toUpperCase()
-      : '0x' + addr.toUpperCase();
-    if (rootAddresses.has(normalizedAddr) && addr !== startAddress) {
+    if (rootAddresses.has(addr) && addr !== startAddress) {
       mermaid += `    style ${addr} fill:#9f9,stroke:#333,stroke-width:2px\n`;
     }
   });
@@ -472,9 +465,7 @@ program
       } else {
         console.log(`Found ${rootAddresses.length} root addresses:`);
         rootAddresses.forEach(addr => {
-          // Ensure 0x prefix is present once
-          const formattedAddr = addr.startsWith('0x') ? addr : '0x' + addr;
-          console.log(`  ${formattedAddr}`);
+          console.log(`  ${addr}`);
         });
       }
     } catch (error) {
