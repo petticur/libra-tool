@@ -4,6 +4,44 @@ import { Command } from 'commander';
 import { LibraClient, Network, LibraViews, MoveValue } from 'open-libra-sdk';
 import { version } from '../package.json';
 
+/**
+ * Validates and normalizes a blockchain address.
+ * - Accepts addresses with or without "0x" prefix
+ * - Validates that the address contains only hexadecimal characters
+ * - Validates that the address is 32 or 64 characters long
+ * - Converts 32-character addresses to 64 characters by prepending zeros
+ * - Returns the normalized address in uppercase
+ * 
+ * @param address - The input address string
+ * @returns The normalized 64-character uppercase address
+ * @throws Exits the process with error code 1 if validation fails
+ */
+function validateAndNormalizeAddress(address: string): string {
+  // Remove 0x prefix if present
+  const addressWithoutPrefix = address.replace(/^0x/i, '');
+  
+  // Check if address contains only hexadecimal characters
+  if (!/^[0-9A-Fa-f]+$/.test(addressWithoutPrefix)) {
+    console.error('Error: Address must contain only hexadecimal characters (0-9, A-F)');
+    process.exit(1);
+  }
+  
+  // Check if address is 32 or 64 characters long
+  if (addressWithoutPrefix.length !== 32 && addressWithoutPrefix.length !== 64) {
+    console.error(`Error: Address must be 32 or 64 characters long (got ${addressWithoutPrefix.length})`);
+    process.exit(1);
+  }
+  
+  // Convert 32-char address to 64-char by prepending 32 zeros
+  let fullAddress = addressWithoutPrefix;
+  if (fullAddress.length === 32) {
+    fullAddress = '0'.repeat(32) + fullAddress;
+  }
+  
+  // Normalize address: convert to uppercase
+  return fullAddress.toUpperCase();
+}
+
 const program = new Command();
 
 program
@@ -41,30 +79,8 @@ program
   .option('--testnet', 'Use testnet instead of mainnet')
   .action(async (address: string, options) => {
     try {
-      // Validate address format
-      // Remove 0x prefix if present
-      const addressWithoutPrefix = address.replace(/^0x/i, '');
-      
-      // Check if address contains only hexadecimal characters
-      if (!/^[0-9A-Fa-f]+$/.test(addressWithoutPrefix)) {
-        console.error('Error: Address must contain only hexadecimal characters (0-9, A-F)');
-        process.exit(1);
-      }
-      
-      // Check if address is 32 or 64 characters long
-      if (addressWithoutPrefix.length !== 32 && addressWithoutPrefix.length !== 64) {
-        console.error(`Error: Address must be 32 or 64 characters long (got ${addressWithoutPrefix.length})`);
-        process.exit(1);
-      }
-      
-      // Convert 32-char address to 64-char by prepending 32 zeros
-      let fullAddress = addressWithoutPrefix;
-      if (fullAddress.length === 32) {
-        fullAddress = '0'.repeat(32) + fullAddress;
-      }
-      
-      // Normalize address: convert to uppercase
-      const normalizedAddress = fullAddress.toUpperCase();
+      // Validate and normalize the address
+      const normalizedAddress = validateAndNormalizeAddress(address);
       
       const network = options.testnet ? Network.TESTNET : Network.MAINNET;
       const client = new LibraClient(network);
