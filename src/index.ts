@@ -47,7 +47,8 @@ const program = new Command();
 program
   .name('libra-tool')
   .description('TypeScript CLI tool for Libra')
-  .version(version, '-v, --version', 'display version number');
+  .version(version, '-v, --version', 'display version number')
+  .option('--testnet', 'Use testnet instead of mainnet');
 
 program
   .command('version')
@@ -59,10 +60,10 @@ program
 program
   .command('block-number')
   .description('Get the current block number from the Libra blockchain')
-  .option('--testnet', 'Use testnet instead of mainnet')
-  .action(async (options) => {
+  .action(async () => {
     try {
-      const network = options.testnet ? Network.TESTNET : Network.MAINNET;
+      const globalOptions = program.opts();
+      const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
       const client = new LibraClient(network);
       
       const ledgerInfo = await client.getLedgerInfo();
@@ -76,13 +77,13 @@ program
 program
   .command('vouches <address>')
   .description('Get received vouches for an account address')
-  .option('--testnet', 'Use testnet instead of mainnet')
-  .action(async (address: string, options) => {
+  .action(async (address: string) => {
     try {
       // Validate and normalize the address
       const normalizedAddress = validateAndNormalizeAddress(address);
       
-      const network = options.testnet ? Network.TESTNET : Network.MAINNET;
+      const globalOptions = program.opts();
+      const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
       const client = new LibraClient(network);
       
       // Craft the view payload using the sugar function
