@@ -60,9 +60,15 @@ async function fetchRootAddresses(client: LibraClient): Promise<string[]> {
     const payload = LibraViews.rootOfTrust_getCurrentRootsAtRegistry("0x1");
     const result = await client.viewJson(payload);
     
-    // The result should be an array of addresses
+    // The result should be an array where the first element is an array of addresses
     if (Array.isArray(result)) {
-      return result.map(addr => String(addr));
+      const rootsArray = result[0];
+      if (Array.isArray(rootsArray)) {
+        return rootsArray.map(addr => String(addr));
+      } else{
+        console.error('Unexpected response format from root registry:', result);
+        return [];
+      }
     } else {
       console.error('Unexpected response format from root registry:', result);
       return [];
@@ -93,7 +99,8 @@ async function fetchVouchGraph(
   currentDepth: number,
   maxDepth: number,
   visited: Set<string>,
-  edges: VouchEdge[]
+  edges: VouchEdge[],
+  rootAddresses: Set<string>
 ): Promise<void> {
   // Check if we've already visited this address (cycle detection)
   if (visited.has(address)) {
@@ -126,15 +133,27 @@ async function fetchVouchGraph(
             to: address
           });
           
-          // Recursively fetch vouches for this voucher
-          await fetchVouchGraph(
-            client,
-            voucherAddress,
-            currentDepth + 1,
-            maxDepth,
-            visited,
-            edges
-          );
+          // Normalize voucher address for comparison with root set
+          const normalizedVoucher = voucherAddress.startsWith('0x') 
+            ? voucherAddress.toUpperCase() 
+            : '0x' + voucherAddress.toUpperCase();
+          
+          // Only recurse if this voucher is not a root address
+          if (!rootAddresses.has(normalizedVoucher)) {
+            // Recursively fetch vouches for this voucher
+            await fetchVouchGraph(
+              client,
+              voucherAddress,
+              currentDepth + 1,
+              maxDepth,
+              visited,
+              edges,
+              rootAddresses
+            );
+          } else {
+            // Mark root address as visited to prevent revisiting from other paths
+            visited.add(voucherAddress);
+          }
         }
       }
     }
@@ -148,13 +167,19 @@ async function fetchVouchGraph(
 /**
  * Generates Mermaid graph markdown from edges
  */
-function generateMermaidGraph(edges: VouchEdge[], startAddress: string): string {
+function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddresses: Set<string>): string {
   if (edges.length === 0) {
+    // Check if start address is a root
+    const normalizedStart = startAddress.startsWith('0x') 
+      ? startAddress.toUpperCase() 
+      : '0x' + startAddress.toUpperCase();
+    const isRoot = rootAddresses.has(normalizedStart);
+    
     // If no edges, just show the single node with special styling
     return `\`\`\`mermaid
 graph TD
     ${startAddress}["${shortenAddress(startAddress)}"]
-    style ${startAddress} fill:#f9f,stroke:#333,stroke-width:4px
+    style ${startAddress} fill:${isRoot ? '#9f9' : '#f9f'},stroke:#333,stroke-width:4px
 \`\`\`\n`;
   }
   
@@ -174,8 +199,18 @@ graph TD
     mermaid += `    ${addr}["${shortenAddress(addr)}"]\n`;
   });
   
-  // Style the start node differently
+  // Style the start node differently (pink)
   mermaid += `    style ${startAddress} fill:#f9f,stroke:#333,stroke-width:4px\n`;
+  
+  // Style root nodes differently (green)
+  addresses.forEach(addr => {
+    const normalizedAddr = addr.startsWith('0x') 
+      ? addr.toUpperCase() 
+      : '0x' + addr.toUpperCase();
+    if (rootAddresses.has(normalizedAddr) && addr !== startAddress) {
+      mermaid += `    style ${addr} fill:#9f9,stroke:#333,stroke-width:2px\n`;
+    }
+  });
   
   // Add edges
   edges.forEach(edge => {
@@ -282,6 +317,14 @@ program
       
       console.log(`Fetching vouch graph for ${shortenAddress(normalizedAddress)} with depth ${maxDepth}...`);
       
+      // Fetch root addresses to constrain the graph walk
+      console.log('Fetching root addresses...');
+      const rootAddressList = await fetchRootAddresses(client);
+      const rootAddresses = new Set<string>(rootAddressList.map(addr => 
+        addr.startsWith('0x') ? addr.toUpperCase() : '0x' + addr.toUpperCase()
+      ));
+      console.log(`Found ${rootAddresses.size} root addresses`);
+      
       // Initialize data structures
       const visited = new Set<string>();
       const edges: VouchEdge[] = [];
@@ -293,13 +336,14 @@ program
         0,
         maxDepth,
         visited,
-        edges
+        edges,
+        rootAddresses
       );
       
       console.log(`Found ${visited.size} addresses and ${edges.length} vouching relationships`);
       
       // Generate Mermaid graph
-      const mermaidContent = generateMermaidGraph(edges, normalizedAddress);
+      const mermaidContent = generateMermaidGraph(edges, normalizedAddress, rootAddresses);
       
       // Write to file
       writeFileSync(options.output, mermaidContent, 'utf-8');
