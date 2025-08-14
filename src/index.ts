@@ -52,6 +52,27 @@ interface VouchEdge {
 }
 
 /**
+ * Fetches the set of root addresses from the trust registry
+ */
+async function fetchRootAddresses(client: LibraClient): Promise<string[]> {
+  try {
+    const payload = LibraViews.rootOfTrust_getCurrentRootsAtRegistry("0x1");
+    const result = await client.viewJson(payload);
+    
+    // The result should be an array of addresses
+    if (Array.isArray(result)) {
+      return result.map(addr => String(addr));
+    } else {
+      console.error('Unexpected response format from root registry:', result);
+      return [];
+    }
+  } catch (error) {
+    console.error('Error fetching root addresses:', error instanceof Error ? error.message : error);
+    throw error;
+  }
+}
+
+/**
  * Shortens an address for display in the graph
  * Shows first 6 and last 4 characters
  */
@@ -126,10 +147,11 @@ async function fetchVouchGraph(
  */
 function generateMermaidGraph(edges: VouchEdge[], startAddress: string): string {
   if (edges.length === 0) {
-    // If no edges, just show the single node
+    // If no edges, just show the single node with special styling
     return `\`\`\`mermaid
 graph TD
     ${startAddress}["0x${shortenAddress(startAddress)}"]
+    style ${startAddress} fill:#f9f,stroke:#333,stroke-width:4px
 \`\`\`\n`;
   }
   
@@ -148,6 +170,9 @@ graph TD
   addresses.forEach(addr => {
     mermaid += `    ${addr}["0x${shortenAddress(addr)}"]\n`;
   });
+  
+  // Style the start node differently
+  mermaid += `    style ${startAddress} fill:#f9f,stroke:#333,stroke-width:4px\n`;
   
   // Add edges
   edges.forEach(edge => {
@@ -280,6 +305,31 @@ program
       
     } catch (error) {
       console.error('Error generating vouch graph:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('get-roots')
+  .description('Get the current set of root addresses from the trust registry')
+  .action(async () => {
+    try {
+      const globalOptions = program.opts();
+      const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
+      const client = new LibraClient(network, globalOptions.url || null);
+      
+      const rootAddresses = await fetchRootAddresses(client);
+      
+      if (rootAddresses.length === 0) {
+        console.log('No root addresses found in the registry');
+      } else {
+        console.log(`Found ${rootAddresses.length} root addresses:`);
+        rootAddresses.forEach(addr => {
+          console.log(`  0x${addr}`);
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching root addresses:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
