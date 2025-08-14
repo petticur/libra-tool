@@ -115,9 +115,14 @@ async function fetchVouchGraph(
       }
     }
   } catch (error) {
+    // Check for a known error that corresponds to the address not being migrated yet
+    if (error instanceof Error && error.message.includes('could not find entry function by 0x1::vouch::get_received_vouches')) {
+      console.warn(`Address ${shortenAddress(address)} has not been migrated yet. Skipping...`);
+    } else {
     // Log error but continue with other addresses
-    console.error(`Warning: Could not fetch vouches for ${shortenAddress(address)}:`, 
+      console.error(`Warning: Could not fetch vouches for ${shortenAddress(address)}:`,
       error instanceof Error ? error.message : error);
+    }
   }
 }
 
