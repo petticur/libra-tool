@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { LibraClient, Network, LibraViews, MoveValue } from 'open-libra-sdk';
+import { writeFileSync } from 'fs';
 import { version } from '../package.json';
 
 /**
@@ -40,6 +41,122 @@ function validateAndNormalizeAddress(address: string): string {
   
   // Normalize address: convert to uppercase
   return fullAddress.toUpperCase();
+}
+
+/**
+ * Edge in the vouch graph
+ */
+interface VouchEdge {
+  from: string;
+  to: string;
+}
+
+/**
+ * Shortens an address for display in the graph
+ * Shows first 6 and last 4 characters
+ */
+function shortenAddress(address: string): string {
+  if (address.length <= 10) return address;
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+/**
+ * Recursively fetches vouches to build a graph
+ */
+async function fetchVouchGraph(
+  client: LibraClient,
+  address: string,
+  currentDepth: number,
+  maxDepth: number,
+  visited: Set<string>,
+  edges: VouchEdge[]
+): Promise<void> {
+  // Check if we've already visited this address (cycle detection)
+  if (visited.has(address)) {
+    return;
+  }
+  
+  // Check if we've reached max depth
+  if (currentDepth >= maxDepth) {
+    return;
+  }
+  
+  // Mark address as visited
+  visited.add(address);
+  
+  try {
+    // Fetch vouches for current address
+    const payload = LibraViews.vouch_getReceivedVouches(address);
+    const result = await client.viewJson(payload);
+    
+    if (Array.isArray(result) && result.length === 2) {
+      const [addresses, epochs] = result;
+      if (Array.isArray(addresses) && Array.isArray(epochs)) {
+        // Process each voucher
+        for (const voucherAddr of addresses) {
+          const voucherAddress = String(voucherAddr);
+          
+          // Add edge from voucher to current address
+          edges.push({
+            from: voucherAddress,
+            to: address
+          });
+          
+          // Recursively fetch vouches for this voucher
+          await fetchVouchGraph(
+            client,
+            voucherAddress,
+            currentDepth + 1,
+            maxDepth,
+            visited,
+            edges
+          );
+        }
+      }
+    }
+  } catch (error) {
+    // Log error but continue with other addresses
+    console.error(`Warning: Could not fetch vouches for ${shortenAddress(address)}:`, 
+      error instanceof Error ? error.message : error);
+  }
+}
+
+/**
+ * Generates Mermaid graph markdown from edges
+ */
+function generateMermaidGraph(edges: VouchEdge[], startAddress: string): string {
+  if (edges.length === 0) {
+    // If no edges, just show the single node
+    return `\`\`\`mermaid
+graph TD
+    ${startAddress}["0x${shortenAddress(startAddress)}"]
+\`\`\`\n`;
+  }
+  
+  // Collect all unique addresses
+  const addresses = new Set<string>();
+  addresses.add(startAddress);
+  edges.forEach(edge => {
+    addresses.add(edge.from);
+    addresses.add(edge.to);
+  });
+  
+  // Build the Mermaid graph
+  let mermaid = '```mermaid\ngraph TD\n';
+  
+  // Add node definitions with shortened labels
+  addresses.forEach(addr => {
+    mermaid += `    ${addr}["0x${shortenAddress(addr)}"]\n`;
+  });
+  
+  // Add edges
+  edges.forEach(edge => {
+    mermaid += `    ${edge.from} --> ${edge.to}\n`;
+  });
+  
+  mermaid += '```\n';
+  
+  return mermaid;
 }
 
 const program = new Command();
@@ -110,6 +227,58 @@ program
       }
     } catch (error) {
       console.error('Error fetching vouches:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('vouch-graph <address>')
+  .description('Generate a Mermaid graph of the vouching network for an address')
+  .option('-d, --depth <number>', 'Maximum depth to traverse (default: 3)', '3')
+  .option('-o, --output <file>', 'Output file path (default: vouch-graph.md)', 'vouch-graph.md')
+  .action(async (address: string, options) => {
+    try {
+      // Validate and normalize the address
+      const normalizedAddress = validateAndNormalizeAddress(address);
+      
+      const globalOptions = program.opts();
+      const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
+      const client = new LibraClient(network);
+      
+      const maxDepth = parseInt(options.depth, 10);
+      if (isNaN(maxDepth) || maxDepth < 1) {
+        console.error('Error: Depth must be a positive number');
+        process.exit(1);
+      }
+      
+      console.log(`Fetching vouch graph for ${shortenAddress(normalizedAddress)} with depth ${maxDepth}...`);
+      
+      // Initialize data structures
+      const visited = new Set<string>();
+      const edges: VouchEdge[] = [];
+      
+      // Fetch the graph recursively
+      await fetchVouchGraph(
+        client,
+        normalizedAddress,
+        0,
+        maxDepth,
+        visited,
+        edges
+      );
+      
+      console.log(`Found ${visited.size} addresses and ${edges.length} vouching relationships`);
+      
+      // Generate Mermaid graph
+      const mermaidContent = generateMermaidGraph(edges, normalizedAddress);
+      
+      // Write to file
+      writeFileSync(options.output, mermaidContent, 'utf-8');
+      console.log(`Mermaid graph written to ${options.output}`);
+      console.log(`You can generate a visual graph using: mmdc -i ${options.output} -o graph.png`);
+      
+    } catch (error) {
+      console.error('Error generating vouch graph:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
