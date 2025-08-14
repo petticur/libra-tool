@@ -11,14 +11,15 @@ import { version } from '../package.json';
  * - Validates that the address contains only hexadecimal characters
  * - Validates that the address is 32 or 64 characters long
  * - Converts 32-character addresses to 64 characters by prepending zeros
- * - Returns the normalized address in uppercase
+ * - Ensures the address has "0x" prefix
+ * - Returns the normalized address in uppercase with "0x" prefix
  * 
  * @param address - The input address string
- * @returns The normalized 64-character uppercase address
+ * @returns The normalized 64-character uppercase address with "0x" prefix
  * @throws Exits the process with error code 1 if validation fails
  */
 function validateAndNormalizeAddress(address: string): string {
-  // Remove 0x prefix if present
+  // Remove 0x prefix if present for validation
   const addressWithoutPrefix = address.replace(/^0x/i, '');
   
   // Check if address contains only hexadecimal characters
@@ -39,8 +40,8 @@ function validateAndNormalizeAddress(address: string): string {
     fullAddress = '0'.repeat(32) + fullAddress;
   }
   
-  // Normalize address: convert to uppercase
-  return fullAddress.toUpperCase();
+  // Normalize address: convert to uppercase and ensure 0x prefix
+  return '0x' + fullAddress.toUpperCase();
 }
 
 /**
@@ -74,11 +75,13 @@ async function fetchRootAddresses(client: LibraClient): Promise<string[]> {
 
 /**
  * Shortens an address for display in the graph
- * Shows first 6 and last 4 characters
+ * Shows "0x" prefix plus first 4 and last 4 characters of the actual address
  */
 function shortenAddress(address: string): string {
-  if (address.length <= 10) return address;
-  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  // Remove 0x prefix if present for consistent handling
+  const cleanAddress = address.replace(/^0x/i, '');
+  if (cleanAddress.length <= 8) return '0x' + cleanAddress;
+  return `0x${cleanAddress.slice(0, 4)}...${cleanAddress.slice(-4)}`;
 }
 
 /**
@@ -150,7 +153,7 @@ function generateMermaidGraph(edges: VouchEdge[], startAddress: string): string 
     // If no edges, just show the single node with special styling
     return `\`\`\`mermaid
 graph TD
-    ${startAddress}["0x${shortenAddress(startAddress)}"]
+    ${startAddress}["${shortenAddress(startAddress)}"]
     style ${startAddress} fill:#f9f,stroke:#333,stroke-width:4px
 \`\`\`\n`;
   }
@@ -168,7 +171,7 @@ graph TD
   
   // Add node definitions with shortened labels
   addresses.forEach(addr => {
-    mermaid += `    ${addr}["0x${shortenAddress(addr)}"]\n`;
+    mermaid += `    ${addr}["${shortenAddress(addr)}"]\n`;
   });
   
   // Style the start node differently
@@ -325,7 +328,9 @@ program
       } else {
         console.log(`Found ${rootAddresses.length} root addresses:`);
         rootAddresses.forEach(addr => {
-          console.log(`  0x${addr}`);
+          // Ensure 0x prefix is present once
+          const formattedAddr = addr.startsWith('0x') ? addr : '0x' + addr;
+          console.log(`  ${formattedAddr}`);
         });
       }
     } catch (error) {
