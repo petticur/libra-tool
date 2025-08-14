@@ -115,14 +115,9 @@ async function fetchVouchGraph(
       }
     }
   } catch (error) {
-    // Check for a known error that corresponds to the address not being migrated yet
-    if (error instanceof Error && error.message.includes('could not find entry function by 0x1::vouch::get_received_vouches')) {
-      console.warn(`Address ${shortenAddress(address)} has not been migrated yet. Skipping...`);
-    } else {
     // Log error but continue with other addresses
-      console.error(`Warning: Could not fetch vouches for ${shortenAddress(address)}:`,
-      error instanceof Error ? error.message : error);
-    }
+    console.error(`Warning: Could not fetch vouches for ${shortenAddress(address)} (probably means the RPC node is broken):`,
+    error instanceof Error ? error.message : error);
   }
 }
 
@@ -170,7 +165,8 @@ program
   .name('libra-tool')
   .description('TypeScript CLI tool for Libra')
   .version(version, '-v, --version', 'display version number')
-  .option('--testnet', 'Use testnet instead of mainnet');
+  .option('--testnet', 'Use testnet instead of mainnet')
+  .option('--url <url>', 'Custom RPC endpoint URL');
 
 program
   .command('version')
@@ -186,7 +182,7 @@ program
     try {
       const globalOptions = program.opts();
       const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
-      const client = new LibraClient(network);
+      const client = new LibraClient(network, globalOptions.url || null);
       
       const ledgerInfo = await client.getLedgerInfo();
       console.log(ledgerInfo.block_height);
@@ -206,7 +202,7 @@ program
       
       const globalOptions = program.opts();
       const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
-      const client = new LibraClient(network);
+      const client = new LibraClient(network, globalOptions.url || null);
       
       // Craft the view payload using the sugar function
       const payload = LibraViews.vouch_getReceivedVouches(normalizedAddress);
@@ -248,7 +244,7 @@ program
       
       const globalOptions = program.opts();
       const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
-      const client = new LibraClient(network);
+      const client = new LibraClient(network, globalOptions.url || null);
       
       const maxDepth = parseInt(options.depth, 10);
       if (isNaN(maxDepth) || maxDepth < 1) {
