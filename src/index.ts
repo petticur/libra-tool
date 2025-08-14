@@ -52,6 +52,12 @@ interface VouchEdge {
   to: string;
 }
 
+
+/**
+ * Map to store final accumulated scores for addresses
+ */
+type ScoreMap = Map<string, number>;
+
 /**
  * Fetches the set of root addresses from the trust registry
  */
@@ -76,6 +82,89 @@ async function fetchRootAddresses(client: LibraClient): Promise<string[]> {
   } catch (error) {
     console.error('Error fetching root addresses:', error instanceof Error ? error.message : error);
     throw error;
+  }
+}
+
+/**
+ * Calculates trust scores for all addresses by walking from root addresses
+ * Root addresses start with score 200,000, halved at each hop
+ */
+async function calculateAddressScores(
+  client: LibraClient,
+  rootAddresses: Set<string>,
+  allAddresses: Set<string>
+): Promise<ScoreMap> {
+  const scores = new Map<string, number>();
+  const ROOT_SCORE = 200000;
+  
+  // Initialize all addresses with score 0
+  allAddresses.forEach(addr => scores.set(addr, 0));
+  
+  // Calculate scores from each root address
+  for (const rootAddr of rootAddresses) {
+    
+    // Set root score
+    scores.set(rootAddr, (scores.get(rootAddr) || 0) + ROOT_SCORE);
+    
+    // BFS from this root
+    const visited = new Set<string>();
+    const queue: Array<{address: string, score: number}> = [{address: rootAddr, score: ROOT_SCORE}];
+    visited.add(rootAddr);
+    
+    while (queue.length > 0) {
+      console.log(`Walking: ${queue.length} addresses left in queue`);
+      const {address, score} = queue.shift()!;
+      const nextScore = Math.floor(score / 2);
+      
+      // Skip if score becomes too small to matter
+      if (nextScore < 1) continue;
+      
+      try {
+        // Fetch who vouches for this address (reverse direction)
+        const payload = LibraViews.vouch_getReceivedVouches(address);
+        const result = await client.viewJson(payload);
+        
+        if (Array.isArray(result) && result.length === 2) {
+          const [addresses] = result;
+          if (Array.isArray(addresses)) {
+            // Process each voucher (who vouches for current address)
+            for (const voucherAddr of addresses) {
+              const voucherAddress = String(voucherAddr);
+              // Add score to voucher if not visited from this root
+              if (!visited.has(voucherAddress)) {
+                visited.add(voucherAddress);
+                
+                // Accumulate score
+                const currentScore = scores.get(voucherAddress) || 0;
+                scores.set(voucherAddress, currentScore + nextScore);
+                
+                // Add to queue for further traversal
+                queue.push({address: voucherAddress, score: nextScore});
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // Skip addresses that can't be fetched
+        console.warn(`Could not fetch vouches for ${shortenAddress(address)} during scoring`,
+          error instanceof Error ? error.message : error);
+      }
+    }
+  }
+  
+  return scores;
+}
+
+/**
+ * Formats a score for display (e.g., 500000 -> "500K")
+ */
+function formatScore(score: number): string {
+  if (score >= 1000000) {
+    return `${Math.floor(score / 1000000)}M`;
+  } else if (score >= 1000) {
+    return `${Math.floor(score / 1000)}K`;
+  } else {
+    return score.toString();
   }
 }
 
@@ -133,13 +222,8 @@ async function fetchVouchGraph(
             to: address
           });
           
-          // Normalize voucher address for comparison with root set
-          const normalizedVoucher = voucherAddress.startsWith('0x') 
-            ? voucherAddress.toUpperCase() 
-            : '0x' + voucherAddress.toUpperCase();
-          
           // Only recurse if this voucher is not a root address
-          if (!rootAddresses.has(normalizedVoucher)) {
+          if (!rootAddresses.has(voucherAddress)) {
             // Recursively fetch vouches for this voucher
             await fetchVouchGraph(
               client,
@@ -167,7 +251,7 @@ async function fetchVouchGraph(
 /**
  * Generates Mermaid graph markdown from edges
  */
-function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddresses: Set<string>): string {
+function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddresses: Set<string>, scores: ScoreMap): string {
   if (edges.length === 0) {
     // Check if start address is a root
     const normalizedStart = startAddress.startsWith('0x') 
@@ -176,9 +260,11 @@ function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddr
     const isRoot = rootAddresses.has(normalizedStart);
     
     // If no edges, just show the single node with special styling
+    const score = scores.get(normalizedStart) || 0;
+    const scoreText = score > 0 ? ` (${formatScore(score)})` : '';
     return `\`\`\`mermaid
 graph TD
-    ${startAddress}["${shortenAddress(startAddress)}"]
+    ${startAddress}["${shortenAddress(startAddress)}${scoreText}"]
     style ${startAddress} fill:${isRoot ? '#9f9' : '#f9f'},stroke:#333,stroke-width:4px
 \`\`\`\n`;
   }
@@ -194,9 +280,14 @@ graph TD
   // Build the Mermaid graph
   let mermaid = '```mermaid\ngraph TD\n';
   
-  // Add node definitions with shortened labels
+  // Add node definitions with shortened labels and scores
   addresses.forEach(addr => {
-    mermaid += `    ${addr}["${shortenAddress(addr)}"]\n`;
+    const normalizedAddr = addr.startsWith('0x') 
+      ? addr.toUpperCase() 
+      : '0x' + addr.toUpperCase();
+    const score = scores.get(normalizedAddr) || 0;
+    const scoreText = score > 0 ? ` (${formatScore(score)})` : '';
+    mermaid += `    ${addr}["${shortenAddress(addr)}${scoreText}"]\n`;
   });
   
   // Style the start node differently (pink)
@@ -320,9 +411,7 @@ program
       // Fetch root addresses to constrain the graph walk
       console.log('Fetching root addresses...');
       const rootAddressList = await fetchRootAddresses(client);
-      const rootAddresses = new Set<string>(rootAddressList.map(addr => 
-        addr.startsWith('0x') ? addr.toUpperCase() : '0x' + addr.toUpperCase()
-      ));
+      const rootAddresses = new Set<string>(rootAddressList.map(addr => addr));
       console.log(`Found ${rootAddresses.size} root addresses`);
       
       // Initialize data structures
@@ -342,8 +431,20 @@ program
       
       console.log(`Found ${visited.size} addresses and ${edges.length} vouching relationships`);
       
-      // Generate Mermaid graph
-      const mermaidContent = generateMermaidGraph(edges, normalizedAddress, rootAddresses);
+      // Collect all unique addresses in the graph
+      const allAddresses = new Set<string>();
+      allAddresses.add(normalizedAddress);
+      edges.forEach(edge => {
+        allAddresses.add(edge.from);
+        allAddresses.add(edge.to);
+      });
+      
+      // Calculate trust scores for all addresses
+      console.log('Calculating trust scores...');
+      const scores = await calculateAddressScores(client, rootAddresses, allAddresses);
+      
+      // Generate Mermaid graph with scores
+      const mermaidContent = generateMermaidGraph(edges, normalizedAddress, rootAddresses, scores);
       
       // Write to file
       writeFileSync(options.output, mermaidContent, 'utf-8');
