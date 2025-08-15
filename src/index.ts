@@ -105,6 +105,8 @@ async function calculateAddressScores(
     // Skip if this root is not in our graph
     if (!allAddresses.has(rootAddr)) continue;
 
+    console.log(`Walking from: ${rootAddr}`);
+
     // BFS from this root, traversing DOWN the trust chain
     const visited = new Set<string>();
     const queue: Array<{address: string, score: number}> = [{address: rootAddr, score: ROOT_SCORE}];
@@ -114,6 +116,7 @@ async function calculateAddressScores(
       console.log(`Walking: ${queue.length} addresses left in queue`);
       const {address, score} = queue.shift()!;
       const nextScore = Math.floor(score / 2);
+      console.log(`Score at this depth: ${score}`)
 
       // Skip if score becomes too small to matter
       if (nextScore < 1) continue;
@@ -137,6 +140,7 @@ async function calculateAddressScores(
                 if (!rootAddresses.has(vouchedAddress)) {
                   const currentScore = scores.get(vouchedAddress) || 0;
                   scores.set(vouchedAddress, currentScore + nextScore);
+                  console.log(`Score for ${vouchedAddress} was: ${currentScore} now ${currentScore + nextScore}`)
                 }
 
                 // Add to queue for further traversal
