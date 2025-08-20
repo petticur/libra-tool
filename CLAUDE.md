@@ -42,22 +42,33 @@ The vouches command accepts addresses with or without "0x" prefix and returns a 
 ## Architecture
 
 ### Core Structure
-- `src/index.ts` - Main CLI entry point using Commander.js
-- Commands are registered using `program.command()` pattern
-- Version is imported from package.json for consistency
+- `src/index.ts` - Main CLI entry point using Commander.js (simplified orchestrator)
+- `src/commands/` - Individual command implementations
+  - `block-number.ts` - Block number command
+  - `vouches.ts` - Vouches command
+  - `vouch-graph.ts` - Vouch graph command
+  - `get-roots.ts` - Get roots command
+- `src/utils/` - Utility modules
+  - `address.ts` - Address validation and formatting
+  - `name-mapping.ts` - Name mapping loading and management
+  - `graph.ts` - Mermaid graph generation
+  - `scoring.ts` - Trust score calculation
+  - `vouching.ts` - Vouch fetching and graph walking
 
 ### Adding New Subcommands
-New subcommands should be added to the main program in src/index.ts using the Commander.js pattern:
+1. Create a new file in `src/commands/` (e.g., `my-command.ts`)
+2. Export a registration function that takes the Commander program instance:
 ```typescript
-program
-  .command('new-command')
-  .description('Description of command')
-  .action(() => {
-    // Implementation
-  });
+export function registerMyCommand(program: Command) {
+  program
+    .command('my-command')
+    .description('Description of command')
+    .action(async () => {
+      // Implementation
+    });
+}
 ```
-
-For complex commands, consider creating separate modules in `src/commands/` and importing them.
+3. Import and call the registration function in `src/index.ts`
 
 ### Key Dependencies
 - `commander` - CLI framework for parsing arguments and subcommands
