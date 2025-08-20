@@ -2,8 +2,119 @@
 
 import { Command } from 'commander';
 import { LibraClient, Network, LibraViews, MoveValue } from 'open-libra-sdk';
-import { writeFileSync } from 'fs';
+import { writeFileSync, readFileSync } from 'fs';
 import { version } from '../package.json';
+
+/**
+ * Default URL for validator handle mappings
+ */
+const DEFAULT_NAME_MAPPING_URL = 'https://raw.githubusercontent.com/0LNetworkCommunity/v7-addresses/refs/heads/main/validator-handle.json';
+
+/**
+ * Interface for name mapping JSON structure
+ */
+interface NameMappingData {
+  validators?: Record<string, string>;
+  [key: string]: any;
+}
+
+/**
+ * Map to store address to name mappings
+ */
+type AddressNameMap = Map<string, string>;
+
+/**
+ * Loads name mappings from a local JSON file
+ */
+function loadNameMappingFromFile(filepath: string): AddressNameMap {
+  const nameMap = new Map<string, string>();
+  try {
+    const content = readFileSync(filepath, 'utf-8');
+    const data: NameMappingData = JSON.parse(content);
+
+    // Process validators field if it exists
+    if (data.validators && typeof data.validators === 'object') {
+      for (const [address, name] of Object.entries(data.validators)) {
+        if (typeof name === 'string') {
+          // Normalize the address (ensure 0x prefix and lowercase)
+          const normalizedAddr = address.startsWith('0x') ? address.toLowerCase() : '0x' + address.toLowerCase();
+          nameMap.set(normalizedAddr, name);
+        }
+      }
+    }
+
+    console.log(`Loaded ${nameMap.size} name mappings from ${filepath}`);
+  } catch (error) {
+    console.warn(`Failed to load name mappings from ${filepath}:`, error instanceof Error ? error.message : error);
+  }
+  return nameMap;
+}
+
+/**
+ * Loads name mappings from a URL
+ */
+async function loadNameMappingFromURL(url: string): Promise<AddressNameMap> {
+  const nameMap = new Map<string, string>();
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const data = await response.json() as NameMappingData;
+
+    // Process validators field if it exists
+    if (data.validators && typeof data.validators === 'object') {
+      for (const [address, name] of Object.entries(data.validators)) {
+        if (typeof name === 'string') {
+          // Normalize the address (ensure 0x prefix and lowercase)
+          const normalizedAddr = address.startsWith('0x') ? address.toLowerCase() : '0x' + address.toLowerCase();
+          nameMap.set(normalizedAddr, name);
+        }
+      }
+    }
+
+    console.log(`Loaded ${nameMap.size} name mappings from ${url}`);
+  } catch (error) {
+    console.warn(`Failed to load name mappings from ${url}:`, error instanceof Error ? error.message : error);
+  }
+  return nameMap;
+}
+
+/**
+ * Loads name mappings from multiple sources (files and URLs)
+ * Later sources override earlier ones for the same address
+ */
+async function loadAllNameMappings(sources: string[], useDefault: boolean = true): Promise<AddressNameMap> {
+  const mergedMap = new Map<string, string>();
+
+  // Load default mapping first if enabled
+  if (useDefault) {
+    const defaultMap = await loadNameMappingFromURL(DEFAULT_NAME_MAPPING_URL);
+    for (const [addr, name] of defaultMap) {
+      mergedMap.set(addr, name);
+    }
+  }
+
+  // Load custom mappings (these override defaults)
+  for (const source of sources) {
+    let sourceMap: AddressNameMap;
+
+    // Determine if source is URL or file
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+      sourceMap = await loadNameMappingFromURL(source);
+    } else {
+      sourceMap = loadNameMappingFromFile(source);
+    }
+
+    // Merge into main map (overriding existing entries)
+    for (const [addr, name] of sourceMap) {
+      mergedMap.set(addr, name);
+    }
+  }
+
+  console.log(`Total name mappings loaded: ${mergedMap.size}`);
+  return mergedMap;
+}
 
 /**
  * Validates and normalizes a blockchain address.
@@ -263,8 +374,15 @@ async function fetchVouchGraph(
 
 /**
  * Generates Mermaid graph markdown from edges
+ * @param nameMap - Optional map of addresses to names for display
  */
-function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddresses: Set<string>, scores: ScoreMap): string {
+function generateMermaidGraph(
+  edges: VouchEdge[],
+  startAddress: string,
+  rootAddresses: Set<string>,
+  scores: ScoreMap,
+  nameMap?: AddressNameMap
+): string {
   if (edges.length === 0) {
     // Check if start address is a root
     const isRoot = rootAddresses.has(startAddress);
@@ -272,9 +390,11 @@ function generateMermaidGraph(edges: VouchEdge[], startAddress: string, rootAddr
     // If no edges, just show the single node with special styling
     const score = scores.get(startAddress) || 0;
     const scoreText = score > 0 ? ` (${formatScore(score)})` : '';
+    const name = nameMap?.get(startAddress.toLowerCase());
+    const nameText = name ? `<br/>${name}` : '';
     return `\`\`\`mermaid
 graph TD
-    ${startAddress}["${shortenAddress(startAddress)}${scoreText}"]
+    ${startAddress}["${shortenAddress(startAddress)}${scoreText}${nameText}"]
     style ${startAddress} fill:${isRoot ? '#9f9' : '#f9f'},stroke:#333,stroke-width:4px
 \`\`\`\n`;
   }
@@ -290,11 +410,13 @@ graph TD
   // Build the Mermaid graph
   let mermaid = '```mermaid\ngraph TD\n';
 
-  // Add node definitions with shortened labels and scores
+  // Add node definitions with shortened labels, scores, and names
   addresses.forEach(addr => {
     const score = scores.get(addr) || 0;
     const scoreText = score > 0 ? ` (${formatScore(score)})` : '';
-    mermaid += `    ${addr}["${shortenAddress(addr)}${scoreText}"]\n`;
+    const name = nameMap?.get(addr.toLowerCase());
+    const nameText = name ? `<br/>${name}` : '';
+    mermaid += `    ${addr}["${shortenAddress(addr)}${scoreText}${nameText}"]\n`;
   });
 
   // Style the start node differently (pink)
@@ -396,6 +518,8 @@ program
   .option('--vouch-depth <number>', 'Maximum depth to traverse for fetching vouches (default: 3)', '3')
   .option('--score-depth <number>', 'Maximum depth to traverse for calculating scores (default: unlimited)', '0')
   .option('-o, --output <file>', 'Output file path (default: vouch-graph.md)', 'vouch-graph.md')
+  .option('--name-mappings <sources...>', 'JSON files or URLs containing address-to-name mappings')
+  .option('--no-default-names', 'Disable loading default name mappings')
   .action(async (address: string, options) => {
     try {
       // Validate and normalize the address
@@ -419,6 +543,11 @@ program
       }
 
       console.log(`Fetching vouch graph for ${shortenAddress(normalizedAddress)} with vouch depth ${vouchDepth} and score depth ${scoreDepth === 0 ? 'unlimited' : scoreDepth}...`);
+
+      // Load name mappings
+      const nameSources = options.nameMappings || [];
+      const useDefaultNames = options.defaultNames !== false;
+      const nameMap = await loadAllNameMappings(nameSources, useDefaultNames);
 
       // Fetch root addresses to constrain the graph walk
       console.log('Fetching root addresses...');
@@ -455,8 +584,8 @@ program
       console.log('Calculating trust scores...');
       const scores = await calculateAddressScores(client, rootAddresses, allAddresses, scoreDepth);
 
-      // Generate Mermaid graph with scores
-      const mermaidContent = generateMermaidGraph(edges, normalizedAddress, rootAddresses, scores);
+      // Generate Mermaid graph with scores and names
+      const mermaidContent = generateMermaidGraph(edges, normalizedAddress, rootAddresses, scores, nameMap);
 
       // Write to file
       writeFileSync(options.output, mermaidContent, 'utf-8');
