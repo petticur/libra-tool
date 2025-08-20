@@ -11,8 +11,8 @@ export function registerVouchGraphCommand(program: Command) {
   program
     .command('vouch-graph <address>')
     .description('Generate a Mermaid graph of the vouching network for an address')
-    .option('--vouch-depth <number>', 'Maximum depth to traverse for fetching vouches (default: 3)', '3')
-    .option('--score-depth <number>', 'Maximum depth to traverse for calculating scores (default: unlimited)', '0')
+    .option('--vouch-depth <number>', 'Maximum depth to traverse for fetching vouches (default: 4)', '4')
+    .option('--score-depth <number>', 'Maximum depth to traverse for calculating scores (default: 4)', '4')
     .option('-o, --output <file>', 'Output file path (default: vouch-graph.md)', 'vouch-graph.md')
     .option('--name-mappings <sources...>', 'JSON files or URLs containing address-to-name mappings')
     .option('--no-default-names', 'Disable loading default name mappings')
