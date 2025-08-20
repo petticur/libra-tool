@@ -32,6 +32,13 @@ This is a TypeScript CLI tool for Libra that uses Commander.js for subcommand su
 
 The vouches command accepts addresses with or without "0x" prefix and returns a formatted JSON array of vouchers with their addresses and epochs.
 
+## Code Style Guidelines
+
+### Formatting Rules
+- **No trailing whitespace**: Never add spaces or tabs at the end of lines
+- Follow existing indentation patterns (2 spaces for TypeScript)
+- Maintain consistent code formatting throughout the project
+
 ## Architecture
 
 ### Core Structure
