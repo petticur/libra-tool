@@ -47,29 +47,52 @@ libra-tool --testnet vouches 1234567890abcdef...
 libra-tool vouches 1234567890abcdef1234567890abcdef
 ```
 
-#### vouch-graph
-Generate a [Mermaid](https://mermaid.js.org/) graph visualization of the vouching network for an address. This command recursively fetches vouches to build a graph of the vouching relationships.
+#### get-roots
+Get the current set of root addresses from the trust registry.
 
 ```bash
-# Generate graph with default depth (3) and output file (vouch-graph.md)
+# Mainnet
+libra-tool get-roots
+
+# Testnet
+libra-tool --testnet get-roots
+```
+
+#### vouch-graph
+Generate a [Mermaid](https://mermaid.js.org/) graph visualization of the vouching network for an address. This command recursively fetches vouches to build a graph of the vouching relationships, calculates trust scores, and can display human-readable names for addresses.
+
+```bash
+# Generate graph with default settings
 libra-tool vouch-graph 0x1234567890abcdef...
 
-# Specify custom depth and output file
-libra-tool vouch-graph 0x1234... --depth 5 --output my-graph.md
+# Specify custom vouch and score depths
+libra-tool vouch-graph 0x1234... --vouch-depth 5 --score-depth 3
 
-# Use testnet
-libra-tool --testnet vouch-graph 0x1234...
+# Use custom name mappings
+libra-tool vouch-graph 0x1234... --name-mappings custom-names.json https://example.com/names.json
+
+# Disable default name mappings
+libra-tool vouch-graph 0x1234... --no-default-names
+
+# Use testnet with custom output
+libra-tool --testnet vouch-graph 0x1234... --output my-graph.md
 ```
 
 **Options:**
-- `-d, --depth <number>` - Maximum depth to traverse the graph (default: 3). Higher values fetch more relationships but take longer.
+- `--vouch-depth <number>` - Maximum depth to traverse for fetching vouches (default: 3). Higher values fetch more relationships but take longer.
+- `--score-depth <number>` - Maximum depth to traverse for calculating trust scores (default: 0 for unlimited). Controls how far from root addresses scores propagate.
 - `-o, --output <file>` - Output file path for the Mermaid markdown (default: vouch-graph.md)
+- `--name-mappings <sources...>` - JSON files or URLs containing address-to-name mappings. Can specify multiple sources.
+- `--no-default-names` - Disable loading default validator name mappings from GitHub
 
 **Features:**
 - Automatically handles cycles in the vouching graph
 - Validates and normalizes addresses (32-char addresses are extended to 64)
+- Calculates trust scores based on distance from root addresses (200K base score, halved at each hop)
+- Displays human-readable names for known addresses (loaded from JSON mappings)
+- Shows shortened addresses (0x1234...5678) and scores in the graph nodes
+- Different node colors: pink for start address, green for root addresses
 - Generates Mermaid-compatible markdown for visualization
-- Shows shortened addresses in the graph for readability
 
 **Converting to Image:**
 After generating the Mermaid markdown file, you can convert it to an image using [mermaid-cli](https://github.com/mermaid-js/mermaid-cli):
