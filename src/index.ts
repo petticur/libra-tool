@@ -79,13 +79,16 @@ async function fetchRootAddresses(client: LibraClient): Promise<string[]> {
 }
 
 /**
- * Calculates trust scores for all addresses by walking from root addresses
- * Root addresses start with score 200,000, halved at each hop
+ * Calculates trust scores for all addresses by walking BACKWARD from each address to roots
+ * This matches the behavior of walking from target to roots via received vouches
+ * Root addresses start with score 200,000, halved at each hop from the root
+ * @param depth - Maximum depth to traverse from addresses to roots (0 = unlimited)
  */
 async function calculateAddressScores(
   client: LibraClient,
   rootAddresses: Set<string>,
-  allAddresses: Set<string>
+  allAddresses: Set<string>,
+  depth: number = 0
 ): Promise<ScoreMap> {
   const scores = new Map<string, number>();
   const ROOT_SCORE = 200000;
@@ -100,58 +103,63 @@ async function calculateAddressScores(
     }
   });
 
-  // Calculate scores from each root address
-  for (const rootAddr of rootAddresses) {
-    // Skip if this root is not in our graph
-    if (!allAddresses.has(rootAddr)) continue;
+  // Calculate score for each non-root address by walking backward to roots
+  for (const targetAddr of allAddresses) {
+    // Skip root addresses (they already have fixed scores)
+    if (rootAddresses.has(targetAddr)) continue;
 
-    console.log(`Walking from: ${rootAddr}`);
+    console.log(`Calculating score for: ${shortenAddress(targetAddr)}`);
 
-    // BFS from this root, traversing DOWN the trust chain
-    const visited = new Set<string>();
-    const queue: Array<{address: string, score: number}> = [{address: rootAddr, score: ROOT_SCORE}];
-    visited.add(rootAddr);
+    // BFS backward from target to find all paths to roots
+    const queue: Array<{address: string, depth: number, path: Set<string>}> = [
+      {address: targetAddr, depth: 0, path: new Set([targetAddr])}
+    ];
 
     while (queue.length > 0) {
-      console.log(`Walking: ${queue.length} addresses left in queue`);
-      const {address, score} = queue.shift()!;
-      const nextScore = Math.floor(score / 2);
-      console.log(`Score at this depth: ${score}`)
+      const {address, depth: currentDepth, path} = queue.shift()!;
 
-      // Skip if score becomes too small to matter
-      if (nextScore < 1) continue;
+      // Skip if we've reached max depth (if depth is specified and greater than 0)
+      if (depth > 0 && currentDepth >= depth) continue;
+
+      // Check if we've reached a root
+      if (rootAddresses.has(address)) {
+        // Calculate score contribution from this path
+        const pathScore = Math.floor(ROOT_SCORE / Math.pow(2, currentDepth));
+        const currentScore = scores.get(targetAddr) || 0;
+        scores.set(targetAddr, currentScore + pathScore);
+        console.log(`Found path to root ${shortenAddress(address)} at depth ${currentDepth}, contributing ${pathScore} to ${shortenAddress(targetAddr)}`)
+        continue; // Don't traverse beyond roots
+      }
 
       try {
-        // Fetch who this address vouches FOR (forward direction)
-        const payload = LibraViews.vouch_getGivenVouches(address);
+        // Fetch who vouches FOR this address (backward direction - received vouches)
+        const payload = LibraViews.vouch_getReceivedVouches(address);
         const result = await client.viewJson(payload);
 
         if (Array.isArray(result) && result.length === 2) {
           const [addresses] = result;
           if (Array.isArray(addresses)) {
-            // Process each address that this address vouches FOR
-            for (const vouchedAddr of addresses) {
-              const vouchedAddress = String(vouchedAddr);
-              // Only process if this address is in our graph
-              if (allAddresses.has(vouchedAddress) && !visited.has(vouchedAddress)) {
-                visited.add(vouchedAddress);
-
-                // Accumulate score (but never for root addresses)
-                if (!rootAddresses.has(vouchedAddress)) {
-                  const currentScore = scores.get(vouchedAddress) || 0;
-                  scores.set(vouchedAddress, currentScore + nextScore);
-                  console.log(`Score for ${vouchedAddress} was: ${currentScore} now ${currentScore + nextScore}`)
-                }
-
-                // Add to queue for further traversal
-                queue.push({address: vouchedAddress, score: nextScore});
+            // Process each address that vouches FOR the current address
+            for (const voucherAddr of addresses) {
+              const voucherAddress = String(voucherAddr);
+              
+              // Only process if this address is in our graph and not in current path (avoid cycles)
+              if (allAddresses.has(voucherAddress) && !path.has(voucherAddress)) {
+                // Add to queue for further traversal (creating new path set to track cycles)
+                const newPath = new Set(path);
+                newPath.add(voucherAddress);
+                queue.push({
+                  address: voucherAddress,
+                  depth: currentDepth + 1,
+                  path: newPath
+                });
               }
             }
           }
         }
       } catch (error) {
         // Skip addresses that can't be fetched
-        console.warn(`Could not fetch given vouches for ${shortenAddress(address)} during scoring`,
+        console.warn(`Could not fetch received vouches for ${shortenAddress(address)} during scoring`,
           error instanceof Error ? error.message : error);
       }
     }
@@ -385,7 +393,8 @@ program
 program
   .command('vouch-graph <address>')
   .description('Generate a Mermaid graph of the vouching network for an address')
-  .option('-d, --depth <number>', 'Maximum depth to traverse (default: 3)', '3')
+  .option('--vouch-depth <number>', 'Maximum depth to traverse for fetching vouches (default: 3)', '3')
+  .option('--score-depth <number>', 'Maximum depth to traverse for calculating scores (default: unlimited)', '0')
   .option('-o, --output <file>', 'Output file path (default: vouch-graph.md)', 'vouch-graph.md')
   .action(async (address: string, options) => {
     try {
@@ -396,13 +405,20 @@ program
       const network = globalOptions.testnet ? Network.TESTNET : Network.MAINNET;
       const client = new LibraClient(network, globalOptions.url || null);
 
-      const maxDepth = parseInt(options.depth, 10);
-      if (isNaN(maxDepth) || maxDepth < 1) {
-        console.error('Error: Depth must be a positive number');
+      const vouchDepth = parseInt(options.vouchDepth, 10);
+      const scoreDepth = parseInt(options.scoreDepth, 10);
+      
+      if (isNaN(vouchDepth) || vouchDepth < 1) {
+        console.error('Error: Vouch depth must be a positive number');
+        process.exit(1);
+      }
+      
+      if (isNaN(scoreDepth) || scoreDepth < 0) {
+        console.error('Error: Score depth must be a non-negative number (0 for unlimited)');
         process.exit(1);
       }
 
-      console.log(`Fetching vouch graph for ${shortenAddress(normalizedAddress)} with depth ${maxDepth}...`);
+      console.log(`Fetching vouch graph for ${shortenAddress(normalizedAddress)} with vouch depth ${vouchDepth} and score depth ${scoreDepth === 0 ? 'unlimited' : scoreDepth}...`);
 
       // Fetch root addresses to constrain the graph walk
       console.log('Fetching root addresses...');
@@ -419,7 +435,7 @@ program
         client,
         normalizedAddress,
         0,
-        maxDepth,
+        vouchDepth,
         visited,
         edges,
         rootAddresses
@@ -437,7 +453,7 @@ program
 
       // Calculate trust scores for all addresses
       console.log('Calculating trust scores...');
-      const scores = await calculateAddressScores(client, rootAddresses, allAddresses);
+      const scores = await calculateAddressScores(client, rootAddresses, allAddresses, scoreDepth);
 
       // Generate Mermaid graph with scores
       const mermaidContent = generateMermaidGraph(edges, normalizedAddress, rootAddresses, scores);
